@@ -205,7 +205,10 @@ class SolCheck:
             raise RuntimeError("Must test solution first")
 
         self.message("Comparing quality with original solution")
-        self.model._FixObjVal = self.model.ObjVal
+        if self.model.Status in [GRB.INFEASIBLE, GRB.INF_OR_UNBD, GRB.UNBOUNDED]:
+            self.model._FixObjVal = float("inf")
+        else:
+            self.model._FixObjVal = self.model.ObjVal
 
         self.sol_unfix()
         self.model.optimize()
@@ -313,7 +316,7 @@ def main_cli():
         diagnose = qy.confirm("Diagnose solution?").ask()
 
     if diagnose:
-        if sc.Status == GRB.INFEASIBLE:
+        if sc.Status in [GRB.INFEASIBLE, GRB.INF_OR_UNBD]:
             if args.model:
                 inf_method = args.infmethod
             else:
@@ -348,3 +351,6 @@ def main_cli():
         sys.exit(sc.Status)
     else:
         sys.exit(0)
+
+if __name__ == "__main__":
+    main_cli()
