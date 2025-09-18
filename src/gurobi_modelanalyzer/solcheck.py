@@ -244,6 +244,12 @@ def main_cli():
         "--result", "-r", help="Filename where the result should be written"
     )
     parser.add_argument(
+        "--exit-status", "-e", action="store_true",
+        help="Exits the program with the model status code of the checked solution's model. "
+             "(eg. an OPTIMAL model would exit with 2, for more information see: "
+             "https://docs.gurobi.com/projects/optimizer/en/current/reference/numericcodes/statuscodes.html)"
+    )
+    parser.add_argument(
         "--testonly", action="store_true", help="Test without solution diagnosis"
     )
     parser.add_argument(
@@ -338,4 +344,7 @@ def main_cli():
         if rfn:
             sc.write_result(rfn)
 
-    sys.exit(sc.Status)
+    if args.exit_status:
+        sys.exit(sc.Status)
+    else:
+        sys.exit(0)
