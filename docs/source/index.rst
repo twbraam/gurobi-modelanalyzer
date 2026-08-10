@@ -6,16 +6,11 @@
 
 Gurobi Modelanalyzer
 ====================
-gurobi-modelanalyzer is a Python package containing different modules
-designed to provide additional insights and model characteristics in
-addition to the functionality available in the Gurobi programming APIs.
-The initial module consists of two functions designed to provide
-explanations of ill conditioned basis matrices.  Additional modules
-to provide detailed information about model data shall be provided in
-future versions.
-
-The included solcheck module is used to analyze feasibility of a
-provided solution to a model instance.
+Gurobi Model Analyzer is an open-source python package that provides detailed
+analysis of model solutions and model characteristics. It consists of a results_analyzer
+module that calculates explanations of ill-conditioned basis matrices, a solcheck module
+that analyzes a given solution, and a scaling module that scales optimization models to
+improve numerical conditioning prior to solving.
 
 .. toctree::
    :maxdepth: 2
