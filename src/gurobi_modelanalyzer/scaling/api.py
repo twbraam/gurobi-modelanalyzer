@@ -392,7 +392,7 @@ def scale_model(
         - 'geometric_mean': Geometric mean scaling (LP, QCP; not QP)
         - 'arithmetic_mean': Arithmetic mean scaling (LP, QCP; not QP)
     scale_passes : int, optional
-        Maximum number of scaling iterations (default: 5)
+        Maximum number of scaling iterations (default: 1)
     scale_conv_tol : float, optional
         Convergence tolerance: scaling stops early when the maximum deviation
         of the scaling factors from 1 falls below this threshold (default: 1e-4)

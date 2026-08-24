@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- The `scale_model` docstring stated a default of 5 for `scale_passes`; the
+  actual default has been 1 since the parameter was introduced.
+
 ## [3.0.0] – 2026-07-15
 
 Full production release of the Model Scaling module.
