@@ -2,6 +2,30 @@
 
 All notable changes to this project are documented here.
 
+## [Unreleased]
+
+### Added
+
+**Model Scaling (`gurobi_modelanalyzer.scaling`)**
+
+- `scale_model` now reports coefficients that are lost while building the
+  scaled model. The scaling log includes the nonzero count of the scaled
+  model alongside its coefficient ranges, and warns when nonzeros were
+  dropped, broken down by cause (underflow, `value_threshold`, or Gurobi's
+  own 1e-13 coefficient floor) and naming the affected constraints.
+  Constraints that lose coefficients are also raised as a `UserWarning`, so
+  they stay visible with `scaling_log_to_console=0`. Previously a dropped
+  coefficient silently changed the feasible region of the scaled model, which
+  can turn a bounded model unbounded when a big-M row loses its bounded
+  variable.
+
+### Fixed
+
+- The `scale_model` docstring stated a default of 5 for `scale_passes`; the
+  actual default has been 1 since the parameter was introduced.
+- Documented that `value_threshold` cannot be lowered below 1e-13, because
+  Gurobi's model builder applies that floor when the constraints are added.
+
 ## [3.0.0] – 2026-07-15
 
 Full production release of the Model Scaling module.

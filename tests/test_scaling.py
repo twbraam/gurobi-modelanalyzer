@@ -15,6 +15,7 @@ from gurobi_modelanalyzer.scaling.methods import (
     ModelData,
     _threshold_small_coefficients,
     _compute_constraint_violations,
+    _extract_range_stats,
 )
 from gurobi_modelanalyzer.scaling.scaled_wrappers import (
     ScaledModel,
@@ -49,6 +50,31 @@ def _tiny_lp(env):
     y = m.addVar(lb=0, name="y")
     m.addConstr(0.001 * x + 1000 * y >= 1, name="c1")
     m.setObjective(x + 1000 * y, GRB.MINIMIZE)
+    m.update()
+    return m
+
+
+def _varbound_lp(env):
+    """
+    A MILP whose scaling drops the ``v`` coefficient of a big-M bound.
+
+      max    v
+      s.t.   1e12 v + 1e-4 w <= 1e12        (big)
+             v - 1e14 z      <= 0           (varbound)
+             0 <= v, w <= 1e15, z binary
+
+    The huge column entry of ``v`` and the huge row entry of ``varbound``
+    drive the product of the two scaling factors below Gurobi's 1e-13
+    coefficient floor, so ``varbound`` loses its only ``v`` coefficient and
+    becomes ``-z <= 0``.
+    """
+    m = gp.Model(env=env)
+    v = m.addVar(lb=0, ub=1e15, name="v")
+    w = m.addVar(lb=0, ub=1e15, name="w")
+    z = m.addVar(vtype=GRB.BINARY, name="z")
+    m.addConstr(1e12 * v + 1e-4 * w <= 1e12, name="big")
+    m.addConstr(v - 1e14 * z <= 0, name="varbound")
+    m.setObjective(v, GRB.MAXIMIZE)
     m.update()
     return m
 
@@ -1347,6 +1373,100 @@ class TestConstrAttributeInheritance(unittest.TestCase):
         self.assertLessEqual(ms.IterCount, 5)
         ms.close()
         m.close()
+
+
+class TestCoefficientLoss(unittest.TestCase):
+    """Reporting of nonzeros dropped while building the scaled model."""
+
+    def setUp(self):
+        self.env = _make_env()
+
+    def tearDown(self):
+        self.env.close()
+
+    def test_zero_threshold_does_not_prevent_builder_drop(self):
+        """
+        value_threshold=0.0 keeps every coefficient in the matrix handed to
+        Gurobi, but Gurobi's builder still applies its own 1e-13 floor.
+        """
+        m = _varbound_lp(self.env)
+        original_nnz = m.NumNZs
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ms = scale_model(
+                m,
+                "equilibration",
+                env=self.env,
+                value_threshold=0.0,
+                scaling_log_to_console=0,
+            )
+        self.assertLess(ms.NumNZs, original_nnz)
+        # The v coefficient of the big-M row is the one that disappears.
+        varbound = ms.getConstrByName("varbound")
+        self.assertEqual(ms.getCoeff(varbound, ms.getVarByName("v")), 0.0)
+        ms.close()
+        m.close()
+
+    def test_log_reports_lost_nonzeros(self):
+        m = _varbound_lp(self.env)
+        with redirect_stderr(io.StringIO()) as console:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                ms = scale_model(
+                    m,
+                    "equilibration",
+                    env=self.env,
+                    value_threshold=0.0,
+                    scaling_log_to_console=1,
+                )
+                ms.close()
+        output = console.getvalue()
+        self.assertIn("nonzeros", output)
+        self.assertIn("varbound", output)
+        # The builder floor and its immunity to value_threshold are explained.
+        self.assertIn("1e-13", output)
+        self.assertIn("cannot lower", output)
+        m.close()
+
+    def test_dropped_coefficient_warns_even_without_log(self):
+        m = _varbound_lp(self.env)
+        with self.assertWarns(UserWarning) as ctx:
+            ms = scale_model(
+                m,
+                "equilibration",
+                env=self.env,
+                value_threshold=0.0,
+                scaling_log_to_console=0,
+            )
+            ms.close()
+        self.assertIn("varbound", str(ctx.warning))
+        m.close()
+
+    def test_no_loss_reported_for_well_scaled_model(self):
+        m = _tiny_lp(self.env)
+        with redirect_stderr(io.StringIO()) as console:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                ms = scale_model(
+                    m, "equilibration", env=self.env, scaling_log_to_console=1
+                )
+                self.assertEqual(ms.NumNZs, m.NumNZs)
+                ms.close()
+        self.assertNotIn("lost", console.getvalue())
+        self.assertEqual([w for w in caught if "constraint" in str(w.message)], [])
+        m.close()
+
+    def test_scaled_stats_report_nonzero_count(self):
+        stats = (
+            "Statistics for model 'vb':\n"
+            "  Problem type                : MIP\n"
+            "  Linear constraint matrix    : 2 rows, 3 columns, 3 nonzeros\n"
+            "  Matrix range                : [1e+00, 1e+00]\n"
+        )
+        extracted = _extract_range_stats(stats)
+        self.assertIn("3 nonzeros", extracted)
+        self.assertIn("Matrix range", extracted)
+        self.assertNotIn("Problem type", extracted)
 
 
 if __name__ == "__main__":

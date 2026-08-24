@@ -6,13 +6,24 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Dict, Union
 import time
 import logging
+import warnings
 
 logger = logging.getLogger("gurobi_modelanalyzer.scaling")
+
+# Gurobi's model builder silently ignores coefficients whose absolute value
+# falls below this floor ("Warning for adding constraints: zero or small
+# (< 1e-13) coefficients, ignored").  It is applied by Gurobi itself when the
+# constraints are added, so it cannot be lowered through value_threshold.
+_GRB_COEFF_FLOOR = 1e-13
 
 
 def _extract_range_stats(stats: str) -> str:
     """
-    Extract only range-related lines from model statistics.
+    Extract the range and matrix size lines from model statistics.
+
+    The matrix size line is kept alongside the ranges so that the scaled
+    model's nonzero count is reported, making a loss of coefficients
+    relative to the original model visible in the log.
 
     Parameters:
     -----------
@@ -22,10 +33,13 @@ def _extract_range_stats(stats: str) -> str:
     Returns:
     --------
     str
-        Only the lines containing range information
+        Only the lines describing coefficient ranges and matrix size
     """
-    range_lines = [line for line in stats.split("\n") if "range" in line.lower()]
-    return "\n".join(range_lines)
+    keep = ("range", "linear constraint matrix")
+    lines = [
+        line for line in stats.split("\n") if any(k in line.lower() for k in keep)
+    ]
+    return "\n".join(lines)
 
 
 def _print_scaling_log(
@@ -442,6 +456,150 @@ def _threshold_small_coefficients(
         result = data.copy()
         result[np.abs(result) < value_threshold] = 0.0
         return result
+
+
+def _report_coefficient_loss(
+    model_scaled: gp.Model,
+    original_matrix: scipy.sparse.spmatrix,
+    scaled_matrix: scipy.sparse.spmatrix,
+    pre_threshold_nnz: int,
+    constr_names: List[str],
+    value_threshold: float,
+    max_rows_listed: int = 10,
+) -> int:
+    """
+    Report coefficients that were lost while building the scaled model.
+
+    Scaling can drop nonzeros in three ways, all of which change the
+    feasible region of the scaled model:
+
+    1. Underflow: the product of the row and column factors drives a
+       coefficient to exactly zero.  The factors are individually bounded
+       by ``scaling_lb``/``scaling_ub``, but their product is not.
+    2. Thresholding: ``value_threshold`` explicitly zeroes coefficients.
+    3. The model builder: Gurobi ignores coefficients with
+       ``|a| < _GRB_COEFF_FLOOR`` when the constraints are added.  This
+       floor applies even when ``value_threshold`` is set lower.
+
+    Gurobi applied the same floor when the original model was built, so
+    every entry of ``original_matrix`` is a meaningful coefficient and any
+    loss is a structural change: a big-M row that loses its bounded
+    variable can silently turn a bounded model into an unbounded one. The
+    loss is therefore also raised as a ``UserWarning``, to reach callers
+    who have the scaling log switched off. The exception is a caller who
+    deliberately raised ``value_threshold`` above the floor to clean up
+    small coefficients, since that loss was explicitly requested.
+
+    Parameters:
+    -----------
+    model_scaled : gp.Model
+        The scaled model, after the constraints have been added
+    original_matrix : scipy.sparse matrix
+        Constraint matrix of the original model
+    scaled_matrix : scipy.sparse matrix
+        Scaled constraint matrix as handed to the model builder, i.e.
+        after thresholding
+    pre_threshold_nnz : int
+        Nonzero count of the scaled matrix before thresholding
+    constr_names : List[str]
+        Constraint names, in the order the rows were added
+    value_threshold : float
+        The threshold requested by the caller
+    max_rows_listed : int, optional
+        Maximum number of affected constraints to name in the log
+        (default: 10)
+
+    Returns:
+    --------
+    int
+        Total number of nonzeros lost relative to the original matrix
+    """
+    original_nnz = int(original_matrix.nnz)
+    intended_nnz = int(scaled_matrix.nnz)
+    built_nnz = int(model_scaled.NumNZs)
+    total_lost = original_nnz - built_nnz
+    if total_lost <= 0:
+        return 0
+
+    underflowed = original_nnz - pre_threshold_nnz
+    thresholded = pre_threshold_nnz - intended_nnz
+    by_builder = intended_nnz - built_nnz
+
+    logger.warning(
+        f"WARNING: the scaled constraint matrix lost {total_lost} of "
+        f"{original_nnz} nonzeros ({original_nnz} -> {built_nnz}). Dropping "
+        "coefficients changes the feasible region of the scaled model."
+    )
+    if underflowed > 0:
+        logger.warning(
+            f"  {underflowed} underflowed to zero while scaling (the product "
+            "of the row and column factors is not bounded by scaling_lb)."
+        )
+    if thresholded > 0:
+        logger.warning(
+            f"  {thresholded} were zeroed by value_threshold={value_threshold:g}."
+        )
+    if by_builder > 0:
+        logger.warning(
+            f"  {by_builder} were ignored by Gurobi's model builder, which "
+            f"drops coefficients with |a| < {_GRB_COEFF_FLOOR:g}."
+        )
+        if value_threshold < _GRB_COEFF_FLOOR:
+            logger.warning(
+                "  That floor is applied by Gurobi when the constraints are "
+                f"added, so value_threshold={value_threshold:g} cannot lower "
+                "it. Widen scaling_lb/scaling_ub or exclude the affected "
+                "rows or columns from scaling (_scale = 0) instead."
+            )
+
+    # getA() materialises the built matrix, so only pay for it once a loss
+    # is known to have happened.
+    orig_row_nnz = np.diff(original_matrix.tocsr().indptr)
+    built_row_nnz = np.diff(model_scaled.getA().tocsr().indptr)
+    affected = np.flatnonzero(built_row_nnz < orig_row_nnz)
+    emptied = [i for i in affected if built_row_nnz[i] == 0]
+
+    def _names(indices: List[int]) -> str:
+        shown = ", ".join(constr_names[i] for i in indices[:max_rows_listed])
+        remaining = len(indices) - max_rows_listed
+        return f"{shown}, ... (+{remaining} more)" if remaining > 0 else shown
+
+    logger.warning(
+        f"  {len(affected)} constraint(s) lost coefficients: "
+        f"{_names(list(affected))}"
+    )
+    if emptied:
+        logger.warning(
+            f"  {len(emptied)} constraint(s) lost every coefficient and are "
+            f"now vacuous or trivially infeasible: {_names(emptied)}"
+        )
+        detail = (
+            f" {len(emptied)} of them lost every coefficient and no longer "
+            "restrict the model at all."
+        )
+    else:
+        detail = ""
+
+    # Gurobi's own builder already applied the floor when the original model
+    # was created, so every entry of original_matrix was a meaningful
+    # coefficient and any loss is a structural change. The one exception is a
+    # caller who deliberately raised value_threshold above the floor to clean
+    # up small coefficients: that loss was asked for, so it stays in the log.
+    requested_cleanup = (
+        underflowed == 0 and by_builder == 0 and value_threshold > _GRB_COEFF_FLOOR
+    )
+    if not requested_cleanup:
+        warnings.warn(
+            f"Scaling dropped {total_lost} coefficient(s) from "
+            f"{len(affected)} constraint(s) of the scaled model: "
+            f"{_names(list(affected))}.{detail} The scaled model therefore has "
+            "a different feasible region than the original and may be "
+            "unbounded or admit solutions the original does not. Enable the "
+            "scaling log for a breakdown.",
+            UserWarning,
+        )
+
+    return total_lost
 
 
 def equilibration(

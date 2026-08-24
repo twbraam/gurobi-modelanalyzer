@@ -44,6 +44,12 @@ API Reference
                       upscaling. Default: 1e8.
    :param value_threshold: Coefficients with absolute value below this
                            threshold are treated as zero. Default: 1e-13.
+                           Raising it drops more coefficients; lowering it
+                           below 1e-13 has no effect, because Gurobi's model
+                           builder ignores coefficients with ``|a| < 1e-13``
+                           when the constraints are added. See
+                           :ref:`ScalingAdvUsageLabel` for how the resulting
+                           loss of nonzeros is reported.
    :param scaling_time_limit: Time limit in seconds for the scaling
                               iterations. If reached, the best scaling found
                               so far is used. Default: no limit.
