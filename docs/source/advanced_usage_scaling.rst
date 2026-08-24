@@ -129,6 +129,57 @@ preventing extreme rescaling that could itself introduce numerical issues:
    )
 
 
+Loss of Coefficients
+********************
+
+Scaling multiplies each coefficient by a row factor and a column factor. Both
+factors are individually bounded by ``scaling_lb`` and ``scaling_ub``, but
+their *product* is not, so a coefficient can be driven far below either bound
+and be dropped from the scaled model altogether. Nonzeros are lost in three
+ways:
+
+* **Underflow.** The scaled coefficient becomes exactly zero.
+* **Thresholding.** ``value_threshold`` explicitly zeroes coefficients whose
+  absolute value falls below it.
+* **The model builder.** Gurobi ignores coefficients with
+  ``|a| < 1e-13`` when the constraints are added, and reports
+  ``Warning for adding constraints: zero or small (< 1e-13) coefficients,
+  ignored``. This floor is applied by Gurobi itself, so setting
+  ``value_threshold`` below ``1e-13`` (including ``0.0``) does not prevent it.
+
+A dropped coefficient changes the feasible region of the scaled model, and a
+single one is enough to invalidate a result. If a big-M bound
+``v - M z <= 0`` loses its ``v`` coefficient, it becomes ``-M z <= 0``, which
+no longer bounds ``v`` at all and can turn a bounded model into an unbounded
+one.
+
+Because Gurobi applied the same floor when the original model was built, every
+coefficient of the original matrix is meaningful and any loss is a real
+structural change. The scaling log therefore reports the nonzero count of the
+scaled model alongside its coefficient ranges, and warns whenever nonzeros were
+lost::
+
+   Building scaled model...
+   WARNING: the scaled constraint matrix lost 1 of 4 nonzeros (4 -> 3). Dropping
+   coefficients changes the feasible region of the scaled model.
+     1 were ignored by Gurobi's model builder, which drops coefficients with
+     |a| < 1e-13.
+     That floor is applied by Gurobi when the constraints are added, so
+     value_threshold=0 cannot lower it. Widen scaling_lb/scaling_ub or exclude
+     the affected rows or columns from scaling (_scale = 0) instead.
+     1 constraint(s) lost coefficients: varbound
+
+The affected constraints are also reported as a ``UserWarning``, so they remain
+visible when the scaling log is switched off with
+``scaling_log_to_console=0``. The one case that stays confined to the log is a
+caller who deliberately raised ``value_threshold`` above ``1e-13`` to clean up
+small coefficients, since that loss was explicitly requested.
+
+If a model triggers these warnings, tighten ``scaling_lb`` and ``scaling_ub``
+towards 1 to limit how far coefficients can be rescaled, or exclude the
+affected rows or columns from scaling with ``_scale = 0`` as described below.
+
+
 Opt-Out Per Variable or Constraint
 ***********************************
 

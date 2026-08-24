@@ -18,6 +18,7 @@ from .methods import (
     _threshold_small_coefficients,
     _iterative_scaling,
     quad_equilibration,
+    _report_coefficient_loss,
     _print_scaling_log,
     _extract_range_stats,
     _scale_single_qconstr,
@@ -401,7 +402,11 @@ def scale_model(
     scaling_ub : float, optional
         Upper bound for scaling factors to avoid extreme values (default: 1e8)
     value_threshold : float, optional
-        Threshold below which coefficients are set to zero (default: 1e-13)
+        Threshold below which coefficients are set to zero (default: 1e-13).
+        Raising it drops more coefficients; lowering it below 1e-13 has no
+        effect, because Gurobi's model builder ignores coefficients with
+        |a| < 1e-13 when the constraints are added. Any resulting loss of
+        nonzeros is reported in the scaling log.
     scaling_time_limit : float, optional
         Time limit in seconds for scaling iterations. Scaling will
         stop when this limit is reached and use the latest scaled
@@ -669,6 +674,7 @@ def scale_model(
     constr_names_scaled = list(model_data.constr_names)
 
     # Clean small coefficients
+    pre_threshold_nnz = int(scaled_matrix.nnz)
     scaled_matrix = _threshold_small_coefficients(scaled_matrix, value_threshold)
     rhs_vector_scaled = _threshold_small_coefficients(
         rhs_vector_scaled, value_threshold
@@ -712,6 +718,18 @@ def scale_model(
     )
 
     model_scaled.update()
+
+    # Scaling can drop nonzeros (underflow, value_threshold, or Gurobi's own
+    # coefficient floor), which changes the feasible region of the scaled
+    # model. Report it rather than letting the model change silently.
+    _report_coefficient_loss(
+        model_scaled,
+        model_data.constr_matrix,
+        scaled_matrix,
+        pre_threshold_nnz,
+        constr_names_scaled,
+        value_threshold,
+    )
 
     # Store scaling matrices and reference to the original model
     model_scaled._col_scaling = col_scaling
